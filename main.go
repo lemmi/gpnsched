@@ -60,6 +60,16 @@ func (e *event) Endtime() time.Time {
 	return parsegpntime(e.End, gpnstop)
 }
 
+func (e *event) Description() string {
+	if e.Long_desc != "" {
+		return e.Long_desc
+	} else if e.Desc != "" {
+		return e.Desc
+	} else {
+		return "No Description"
+	}
+}
+
 func icaldatetime(t time.Time) string {
 	year, month, day := t.UTC().Date()
 	hour, min, sec := t.UTC().Clock()
@@ -73,7 +83,7 @@ func (e *event) VEVENT() [][]byte {
 	lines = append(lines, []byte("DTSTART:" + icaldatetime(e.Starttime())))
 	lines = append(lines, []byte("DTEND:" + icaldatetime(e.Endtime())))
 	lines = append(lines, []byte("SUMMARY:" + e.Title))
-	lines = append(lines, []byte("DESCRIPTION:" + e.Desc))
+	lines = append(lines, []byte("DESCRIPTION:" + e.Description()))
 	lines = append(lines, []byte("END:VEVENT"))
 
 	for i, line := range lines {
@@ -83,15 +93,12 @@ func (e *event) VEVENT() [][]byte {
 }
 
 func breaklongline(line []byte) []byte {
-	if len(line) <= 75 {
-		return line
-	}
-
 	var lines [][]byte
 	for len(line) > 75 {
 		lines = append(lines, line[0:75])
 		line = line[75:]
 	}
+	lines = append(lines, line)
 	return bytes.Join(lines, CRLFSP)
 }
 
@@ -106,7 +113,10 @@ func (c calendar) ICal() []byte {
 	buf.Write(CRLF)
 
 	for _, e := range c {
-		lines = append(lines, (&e).VEVENT()...)
+		for _, line := range (&e).VEVENT() {
+			buf.Write(line)
+			buf.Write(CRLF)
+		}
 	}
 
 	buf.Write(bytes.Join(lines, CRLF))
