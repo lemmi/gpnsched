@@ -84,6 +84,7 @@ func (e *event) VEVENT() [][]byte {
 	lines = append(lines, []byte("DTEND:" + icaldatetime(e.Endtime())))
 	lines = append(lines, []byte("SUMMARY:" + e.Title))
 	lines = append(lines, []byte("DESCRIPTION:" + e.Description()))
+	lines = append(lines, []byte("LOCATION:" + e.Place))
 	lines = append(lines, []byte("END:VEVENT"))
 
 	for i, line := range lines {
@@ -93,13 +94,17 @@ func (e *event) VEVENT() [][]byte {
 }
 
 func breaklongline(line []byte) []byte {
-	var lines [][]byte
-	for len(line) > 75 {
-		lines = append(lines, line[0:75])
-		line = line[75:]
+	var buf bytes.Buffer
+	currentlinelength := 0
+	for _, char := range bytes.Split(line, []byte{}) {
+		if currentlinelength + len(char) > 75 {
+			currentlinelength = 0
+			buf.Write(CRLFSP)
+		}
+		currentlinelength += len(char)
+		buf.Write(char)
 	}
-	lines = append(lines, line)
-	return bytes.Join(lines, CRLFSP)
+	return buf.Bytes()
 }
 
 func (c calendar) ICal() []byte {
