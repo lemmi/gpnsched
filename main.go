@@ -7,7 +7,7 @@ import (
 	"time"
 	"bytes"
 	"text/template"
-	"strings"
+	"sync"
 )
 
 var (
@@ -16,7 +16,8 @@ var (
 	loc, _ = time.LoadLocation("Europe/Berlin")
 	gpnstart = time.Date(2013, 05, 30, 17, 23, 0, 0, loc)
 	gpnstop = time.Date(2013, 06, 02, 15, 30, 0, 0, loc)
-	rooms = []string{}
+	icals = map[location][]byte{}
+	icalsmutex = sync.RWMutex{}
 )
 
 func parsegpntime(t string, fallback time.Time) time.Time {
@@ -26,18 +27,32 @@ func parsegpntime(t string, fallback time.Time) time.Time {
 	return time.Date(year, time.Month(month), day, hour, min, 0, 0, loc)
 }
 
-type location struct {
-	location string
-	ical     []byte
+func breaklongline(line []byte) []byte {
+	var buf bytes.Buffer
+	currentlinelength := 0
+	for _, char := range bytes.Split(line, []byte{}) {
+		if currentlinelength + len(char) > 75 {
+			currentlinelength = 0
+			buf.Write(CRLFSP)
+		}
+		currentlinelength += len(char)
+		buf.Write(char)
+	}
+	return buf.Bytes()
 }
+
+type location string
 
 func (l location) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	fmt.Println(l.location)
-	w.Write(l.ical)
+	fmt.Println(l)
+	icalsmutex.RLock()
+	w.Write(icals[l])
+	icalsmutex.RUnlock()
+}
+func (l location) String() string {
+	return string(l)
 }
 
-
-type calendar []event
 type event struct {
 	Confirmed   string
 	Start       string
@@ -49,7 +64,7 @@ type event struct {
 	Desc        string
 	Long_desc   string
 	Link        string
-	Place       string
+	Place       location
 }
 
 func (e *event) Starttime() time.Time {
@@ -57,17 +72,18 @@ func (e *event) Starttime() time.Time {
 }
 
 func (e *event) Endtime() time.Time {
-	return parsegpntime(e.End, gpnstop)
+	return parsegpntime(e.End, e.Starttime())
 }
 
-func (e *event) Description() string {
+func (e *event) Description() (ret string) {
 	if e.Long_desc != "" {
-		return e.Long_desc
+		ret = e.Long_desc
 	} else if e.Desc != "" {
-		return e.Desc
+		ret = e.Desc
 	} else {
-		return "No Description"
+		ret = "No Description"
 	}
+	return
 }
 
 func icaldatetime(t time.Time) string {
@@ -93,20 +109,7 @@ func (e *event) VEVENT() [][]byte {
 	return lines
 }
 
-func breaklongline(line []byte) []byte {
-	var buf bytes.Buffer
-	currentlinelength := 0
-	for _, char := range bytes.Split(line, []byte{}) {
-		if currentlinelength + len(char) > 75 {
-			currentlinelength = 0
-			buf.Write(CRLFSP)
-		}
-		currentlinelength += len(char)
-		buf.Write(char)
-	}
-	return buf.Bytes()
-}
-
+type calendar []event
 func (c calendar) ICal() []byte {
 	lines := [][]byte{}
 	var buf bytes.Buffer
@@ -137,44 +140,53 @@ const htmltmpl = "" +
 <title>Fahrplaene</title>
 </head>
 <body>
-{{range . }}
-<a href="/{{.}}">{{.}}</a><br/>
+{{range $room, $discard := . }}
+<a href="/{{$room}}">{{$room}}</a><br/>
 {{end}}
 </body>
 `
 
-func sync() {
-	resp, err := http.Get("http://bl0rg.net/~andi/gpn13-fahrplan.json")
-	if err != nil { panic(err) }
-	defer resp.Body.Close()
+func synccalendars() {
+	ticker := time.NewTicker(5*time.Minute)
+	for ; ; <-ticker.C {
+		resp, err := http.Get("http://bl0rg.net/~andi/gpn13-fahrplan.json")
+		if err != nil { panic(err) }
+		defer resp.Body.Close()
 
-	events := calendar{}
-	dec := json.NewDecoder(resp.Body)
-	err = dec.Decode(&events)
-	if err != nil { panic(err) }
+		events := calendar{}
+		dec := json.NewDecoder(resp.Body)
+		err = dec.Decode(&events)
+		if err != nil { panic(err) }
 
-	builder := map[string]calendar{}
-	for _, e := range events {
-		builder[e.Place] = append(builder[e.Place], e)
-	}
-
-	for room, events := range builder {
-		if room != "" {
-			room = strings.Replace(room, " ", "", -1)
-			rooms = append(rooms, room)
-			http.Handle("/"+room, location{room, []byte(events.ICal())})
+		builder := map[location]calendar{}
+		for _, e := range events {
+			builder[e.Place] = append(builder[e.Place], e)
 		}
+
+		icalsmutex.Lock()
+		icals = map[location][]byte{}
+		for room, events := range builder {
+			if room != "" {
+				icals[room] = events.ICal()
+			}
+		}
+		icalsmutex.Unlock()
 	}
 }
 
 func handle(w http.ResponseWriter, r *http.Request) {
-	tmpl := template.Must(template.New("html").Parse(htmltmpl))
-	tmpl.Execute(w, rooms)
+	if path := r.URL.Path; path == "/" {
+		icalsmutex.RLock()
+		tmpl := template.Must(template.New("html").Parse(htmltmpl))
+		tmpl.Execute(w, icals)
+		icalsmutex.RUnlock()
+	} else {
+		location(path[1:]).ServeHTTP(w, r)
+	}
 }
 
 func main() {
-	sync()
-	fmt.Println("starting")
+	go synccalendars()
 	http.HandleFunc("/", handle)
 	if err := http.ListenAndServe(":8000", nil); err != nil {
 		panic(err)
