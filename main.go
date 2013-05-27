@@ -8,6 +8,9 @@ import (
 	"bytes"
 	"text/template"
 	"sync"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 )
 
 var (
@@ -86,6 +89,17 @@ func (e *event) Description() (ret string) {
 	return
 }
 
+func (e *event) UID() (ret string) {
+	var buf bytes.Buffer
+	buf.WriteString(e.Start)
+	buf.WriteString(e.Title)
+	buf.WriteString(e.Place.String())
+
+	hash := sha256.New()
+	io.Copy(hash, &buf)
+	return hex.EncodeToString(hash.Sum([]byte{}))
+}
+
 func icaldatetime(t time.Time) string {
 	year, month, day := t.UTC().Date()
 	hour, min, sec := t.UTC().Clock()
@@ -101,6 +115,7 @@ func (e *event) VEVENT() [][]byte {
 	lines = append(lines, []byte("SUMMARY:" + e.Title))
 	lines = append(lines, []byte("DESCRIPTION:" + e.Description()))
 	lines = append(lines, []byte("LOCATION:" + e.Place))
+	lines = append(lines, []byte("UID:" + e.UID()))
 	lines = append(lines, []byte("END:VEVENT"))
 
 	for i, line := range lines {
