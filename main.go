@@ -180,6 +180,7 @@ func synccalendars() {
 
 		icalsmutex.Lock()
 		icals = map[location][]byte{}
+		icals["Alle"] = events.ICal()
 		for room, events := range builder {
 			if room != "" {
 				icals[room] = events.ICal()
