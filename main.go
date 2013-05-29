@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"strings"
 )
 
 var (
@@ -30,10 +31,10 @@ func parsegpntime(t string, fallback time.Time) time.Time {
 	return time.Date(year, time.Month(month), day, hour, min, 0, 0, loc)
 }
 
-func breaklongline(line []byte) []byte {
+func breaklongline(line string) string {
 	var buf bytes.Buffer
 	currentlinelength := 0
-	for _, char := range bytes.Split(line, []byte{}) {
+	for _, char := range bytes.Split([]byte(line), []byte{}) {
 		if currentlinelength + len(char) > 75 {
 			currentlinelength = 0
 			buf.Write(CRLFSP)
@@ -41,7 +42,7 @@ func breaklongline(line []byte) []byte {
 		currentlinelength += len(char)
 		buf.Write(char)
 	}
-	return buf.Bytes()
+	return buf.String()
 }
 
 type location string
@@ -78,6 +79,17 @@ func (e *event) Endtime() time.Time {
 	return parsegpntime(e.End, e.Starttime())
 }
 
+func (e *event) Titlestring() (ret string) {
+	ret = "\"" + e.Title + "\""
+	if e.Speaker != "" {
+		ret += " - " + e.Speaker
+	}
+	if e.Affiliation != "" && e.Affiliation != e.Speaker {
+		ret += " (" + e.Affiliation + ")"
+	}
+	return
+}
+
 func (e *event) Description() (ret string) {
 	if e.Long_desc != "" {
 		ret = e.Long_desc
@@ -85,6 +97,9 @@ func (e *event) Description() (ret string) {
 		ret = e.Desc
 	} else {
 		ret = "No Description"
+	}
+	if e.Link != "" {
+		ret = "\n\n" + e.Link
 	}
 	return
 }
@@ -106,43 +121,52 @@ func icaldatetime(t time.Time) string {
 	return fmt.Sprintf("%04d%02d%02dT%02d%02d%02dZ", year, month, day, hour, min, sec)
 }
 
-func (e *event) VEVENT() [][]byte {
-	lines := [][]byte{}
-	lines = append(lines, []byte("BEGIN:VEVENT"))
-	lines = append(lines, []byte("DTSAMP:" + icaldatetime(time.Now())))
-	lines = append(lines, []byte("DTSTART:" + icaldatetime(e.Starttime())))
-	lines = append(lines, []byte("DTEND:" + icaldatetime(e.Endtime())))
-	lines = append(lines, []byte("SUMMARY:" + e.Title))
-	lines = append(lines, []byte("DESCRIPTION:" + e.Description()))
-	lines = append(lines, []byte("LOCATION:" + e.Place))
-	lines = append(lines, []byte("UID:" + e.UID()))
-	lines = append(lines, []byte("END:VEVENT"))
+var icalescape = strings.NewReplacer(
+	"\\", "\\\\",
+	"\n", "\\n",
+	";",  "\\;",
+	",",  "\\,",
+).Replace
 
-	for i, line := range lines {
-		lines[i] = breaklongline(bytes.Replace(line, []byte("\n"), []byte("\\n"), -1))
+func icalformatline(key, value string) string {
+	return breaklongline(key + ":" + icalescape(value))
+}
+
+func (e *event) VEVENT() (ret []string) {
+	lines := map[string]string{}
+	lines["DTSAMP"]      = icaldatetime(time.Now())
+	lines["DTSTART"]     = icaldatetime(e.Starttime())
+	lines["DTEND"]       = icaldatetime(e.Endtime())
+	lines["SUMMARY"]     = e.Titlestring()
+	lines["DESCRIPTION"] = e.Description()
+	lines["LOCATION"]    = string(e.Place)
+	lines["UID"]         = e.UID()
+
+	ret = append(ret, icalformatline("BEGIN", "VEVENT"))
+	for key, value := range lines {
+		ret = append(ret, icalformatline(key, value))
 	}
-	return lines
+	ret = append(ret, icalformatline("END", "VEVENT"))
+	return
 }
 
 type calendar []event
 func (c calendar) ICal() []byte {
-	lines := [][]byte{}
 	var buf bytes.Buffer
-	buf.WriteString("BEGIN:VCALENDAR")
+	buf.WriteString(icalformatline("BEGIN", "VCALENDAR"))
 	buf.Write(CRLF)
-	buf.WriteString("PRODID:pff")
+	buf.WriteString(icalformatline("PRODID", "pff"))
 	buf.Write(CRLF)
-	buf.WriteString("VERSION:2.0")
+	buf.WriteString(icalformatline("VERSION", "2.0"))
 	buf.Write(CRLF)
 
 	for _, e := range c {
 		for _, line := range (&e).VEVENT() {
-			buf.Write(line)
+			buf.WriteString(line)
 			buf.Write(CRLF)
 		}
 	}
 
-	buf.Write(bytes.Join(lines, CRLF))
 	buf.Write(CRLF)
 	buf.WriteString("END:VCALENDAR")
 
