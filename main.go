@@ -155,9 +155,9 @@ func (c calendar) ICal() []byte {
 	var buf bytes.Buffer
 	buf.WriteString(icalformatline("BEGIN", "VCALENDAR"))
 	buf.Write(CRLF)
-	buf.WriteString(icalformatline("PRODID", "pff"))
-	buf.Write(CRLF)
 	buf.WriteString(icalformatline("VERSION", "2.0"))
+	buf.Write(CRLF)
+	buf.WriteString(icalformatline("PRODID", "pff"))
 	buf.Write(CRLF)
 
 	for _, e := range c {
@@ -167,9 +167,7 @@ func (c calendar) ICal() []byte {
 		}
 	}
 
-	buf.Write(CRLF)
 	buf.WriteString("END:VCALENDAR")
-
 	return buf.Bytes()
 }
 
