@@ -134,7 +134,7 @@ func icalformatline(key, value string) string {
 
 func (e *event) VEVENT() (ret []string) {
 	lines := map[string]string{}
-	lines["DTSAMP"]      = icaldatetime(time.Now())
+	lines["DTSTAMP"]     = icaldatetime(time.Now())
 	lines["DTSTART"]     = icaldatetime(e.Starttime())
 	lines["DTEND"]       = icaldatetime(e.Endtime())
 	lines["SUMMARY"]     = e.Titlestring()
