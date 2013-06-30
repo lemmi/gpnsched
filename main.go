@@ -33,14 +33,13 @@ func parsegpntime(t string, fallback time.Time) time.Time {
 
 func breaklongline(line string) string {
 	var buf bytes.Buffer
-	currentlinelength := 0
-	for _, char := range bytes.Split([]byte(line), []byte{}) {
-		if currentlinelength + len(char) > 75 {
-			currentlinelength = 0
+	segments := 1
+	for pos, char := range line {
+		if pos > 75 * segments {
+			segments++
 			buf.Write(CRLFSP)
 		}
-		currentlinelength += len(char)
-		buf.Write(char)
+		buf.WriteRune(char)
 	}
 	return buf.String()
 }
@@ -50,6 +49,8 @@ type location string
 func (l location) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Println(l)
 	icalsmutex.RLock()
+	w.Header().Add("Content-Type", "text/calendar")
+	w.Header().Add("Content-Length", fmt.Sprintf("%d", len(icals[l])))
 	w.Write(icals[l])
 	icalsmutex.RUnlock()
 }
