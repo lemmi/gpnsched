@@ -1,33 +1,36 @@
 package main
 
 import (
-	"encoding/json"
-	"net/http"
-	"fmt"
-	"time"
+	"bufio"
 	"bytes"
-	"text/template"
-	"sync"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"sync"
+	"text/template"
+	"time"
 )
 
 var (
-	CRLF = []byte{'\r', '\n'}
-	CRLFSP = []byte{'\r', '\n', ' '}
-	loc, _ = time.LoadLocation("Europe/Berlin")
-	gpnstart = time.Date(2013, 05, 30, 17, 23, 0, 0, loc)
-	gpnstop = time.Date(2013, 06, 02, 15, 30, 0, 0, loc)
-	icals = map[location][]byte{}
+	CRLF       = []byte{'\r', '\n'}
+	CRLFSP     = []byte{'\r', '\n', ' '}
+	loc, _     = time.LoadLocation("Europe/Berlin")
+	gpnstart   = time.Date(2013, 05, 30, 17, 23, 0, 0, loc)
+	gpnstop    = time.Date(2013, 06, 02, 15, 30, 0, 0, loc)
+	icals      = map[location][]byte{}
 	icalsmutex = sync.RWMutex{}
 )
 
 func parsegpntime(t string, fallback time.Time) time.Time {
 	var year, month, day, hour, min int
 	n, err := fmt.Sscanf(t, "%04d%02d%02d-%02d%02d", &year, &month, &day, &hour, &min)
-	if err != nil || n != 5 { return fallback }
+	if err != nil || n != 5 {
+		return fallback
+	}
 	return time.Date(year, time.Month(month), day, hour, min, 0, 0, loc)
 }
 
@@ -35,13 +38,65 @@ func breaklongline(line string) string {
 	var buf bytes.Buffer
 	segments := 1
 	for pos, char := range line {
-		if pos > 75 * segments {
+		if pos > 75*segments {
 			segments++
 			buf.Write(CRLFSP)
 		}
 		buf.WriteRune(char)
 	}
 	return buf.String()
+}
+
+type BreakLongLineWriter struct {
+	w      io.Writer
+	buf    []byte
+	maxlen int
+	pos    int
+}
+
+func NewBreakLongLineWriter(w io.Writer, linelength int) io.Writer {
+	return &BreakLongLineWriter{w: w, buf: []byte{}, maxlen: linelength, pos: 0}
+}
+
+func (b *BreakLongLineWriter) Write(p []byte) (int, error) {
+	if len(b.buf) == 0 {
+		b.buf = p
+	} else {
+		b.buf = append(b.buf, p...)
+	}
+	for len(b.buf) > 0 {
+		adv, line, _ := bufio.ScanLines(b.buf, true)
+		var n int
+		for len(line) > 0 {
+			adv, tok, _ := bufio.ScanRunes(line, false)
+			if tok == nil {
+				break
+			}
+
+			if b.pos+adv >= b.maxlen {
+				b.w.Write(CRLFSP)
+				b.pos = 1
+			}
+
+			c, err := b.w.Write(tok)
+			if err != nil {
+				return len(p), err
+			}
+			b.pos += c
+			n += c
+			line = line[c:]
+		}
+		if n == 0 {
+			b.buf = append([]byte{}, b.buf...)
+			break
+		}
+		b.buf = b.buf[adv:]
+		if _, err := b.w.Write(CRLF); err != nil {
+			return n, err
+		}
+		b.pos = 0
+	}
+	return len(p), nil
 }
 
 type location string
@@ -125,55 +180,45 @@ func icaldatetime(t time.Time) string {
 var icalescape = strings.NewReplacer(
 	"\\", "\\\\",
 	"\n", "\\n",
-	";",  "\\;",
-	",",  "\\,",
+	";", "\\;",
+	",", "\\,",
 ).Replace
 
-func icalformatline(key, value string) string {
-	return breaklongline(key + ":" + icalescape(value))
+func icalformatline(w io.Writer, key, value string) {
+	fmt.Fprintf(w, "%s:%s\r\n", key, icalescape(value))
 }
 
-func (e *event) VEVENT() (ret []string) {
-	lines := map[string]string{}
-	lines["DTSTAMP"]     = icaldatetime(time.Now())
-	lines["DTSTART"]     = icaldatetime(e.Starttime())
-	lines["DTEND"]       = icaldatetime(e.Endtime())
-	lines["SUMMARY"]     = e.Titlestring()
-	lines["DESCRIPTION"] = e.Description()
-	lines["LOCATION"]    = string(e.Place)
-	lines["UID"]         = e.UID()
-
-	ret = append(ret, icalformatline("BEGIN", "VEVENT"))
-	for key, value := range lines {
-		ret = append(ret, icalformatline(key, value))
-	}
-	ret = append(ret, icalformatline("END", "VEVENT"))
-	return
+func (e *event) VEVENT(w io.Writer) {
+	icalformatline(w, "BEGIN", "VEVENT")
+	icalformatline(w, "DTSTAMP", icaldatetime(time.Now()))
+	icalformatline(w, "DTSTART", icaldatetime(e.Starttime()))
+	icalformatline(w, "DTEND", icaldatetime(e.Endtime()))
+	icalformatline(w, "SUMMARY", e.Titlestring())
+	icalformatline(w, "DESCRIPTION", e.Description())
+	icalformatline(w, "LOCATION", string(e.Place))
+	icalformatline(w, "UID", e.UID())
+	icalformatline(w, "END", "VEVENT")
 }
 
 type calendar []event
+
 func (c calendar) ICal() []byte {
 	var buf bytes.Buffer
-	buf.WriteString(icalformatline("BEGIN", "VCALENDAR"))
-	buf.Write(CRLF)
-	buf.WriteString(icalformatline("VERSION", "2.0"))
-	buf.Write(CRLF)
-	buf.WriteString(icalformatline("PRODID", "pff"))
-	buf.Write(CRLF)
+	w := NewBreakLongLineWriter(&buf, 75)
+	icalformatline(w, "BEGIN", "VCALENDAR")
+	icalformatline(w, "VERSION", "2.0")
+	icalformatline(w, "PRODID", "pff")
 
 	for _, e := range c {
-		for _, line := range (&e).VEVENT() {
-			buf.WriteString(line)
-			buf.Write(CRLF)
-		}
+		e.VEVENT(w)
 	}
 
-	buf.WriteString("END:VCALENDAR")
+	icalformatline(w, "END", "VCALENDAR")
 	return buf.Bytes()
 }
 
 const htmltmpl = "" +
-`
+	`
 <head>
 <title>Fahrplaene</title>
 </head>
@@ -185,16 +230,20 @@ const htmltmpl = "" +
 `
 
 func synccalendars() {
-	ticker := time.NewTicker(5*time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	for ; ; <-ticker.C {
 		resp, err := http.Get("http://bl0rg.net/~andi/gpn13-fahrplan.json")
-		if err != nil { panic(err) }
+		if err != nil {
+			panic(err)
+		}
 		defer resp.Body.Close()
 
 		events := calendar{}
 		dec := json.NewDecoder(resp.Body)
 		err = dec.Decode(&events)
-		if err != nil { panic(err) }
+		if err != nil {
+			panic(err)
+		}
 
 		builder := map[location]calendar{}
 		for _, e := range events {
