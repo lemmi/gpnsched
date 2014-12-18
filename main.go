@@ -34,19 +34,6 @@ func parsegpntime(t string, fallback time.Time) time.Time {
 	return time.Date(year, time.Month(month), day, hour, min, 0, 0, loc)
 }
 
-func breaklongline(line string) string {
-	var buf bytes.Buffer
-	segments := 1
-	for pos, char := range line {
-		if pos > 75*segments {
-			segments++
-			buf.Write(CRLFSP)
-		}
-		buf.WriteRune(char)
-	}
-	return buf.String()
-}
-
 type BreakLongLineWriter struct {
 	w      io.Writer
 	buf    []byte
@@ -161,13 +148,11 @@ func (e *event) Description() (ret string) {
 }
 
 func (e *event) UID() (ret string) {
-	var buf bytes.Buffer
-	buf.WriteString(e.Start)
-	buf.WriteString(e.Title)
-	buf.WriteString(e.Place.String())
-
 	hash := sha256.New()
-	io.Copy(hash, &buf)
+	io.WriteString(hash, e.Start)
+	io.WriteString(hash, e.Title)
+	io.WriteString(hash, e.Place.String())
+
 	return hex.EncodeToString(hash.Sum([]byte{}))
 }
 
@@ -195,7 +180,7 @@ func (e *event) VEVENT(w io.Writer) {
 	icalformatline(w, "DTEND", icaldatetime(e.Endtime()))
 	icalformatline(w, "SUMMARY", e.Titlestring())
 	icalformatline(w, "DESCRIPTION", e.Description())
-	icalformatline(w, "LOCATION", string(e.Place))
+	icalformatline(w, "LOCATION", e.Place.String())
 	icalformatline(w, "UID", e.UID())
 	icalformatline(w, "END", "VEVENT")
 }
